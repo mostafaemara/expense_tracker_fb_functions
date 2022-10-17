@@ -1,6 +1,13 @@
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 
+const {
+  groupTransactionsByDate,
+
+  getAccount,
+  getUserAccounts,
+  populateTransactions,
+} = require("./helpers");
 admin.initializeApp();
 
 exports.addTransaction = functions.https.onCall(async (data, context) => {
@@ -25,7 +32,7 @@ exports.addTransaction = functions.https.onCall(async (data, context) => {
     .collection("categories")
     .doc(data.categoryId)
     .get();
-
+  data.created_at = data.created_at.toDate();
   const category = categoryDoc.data();
   category.id = categoryDoc.id;
   return JSON.stringify({
@@ -69,161 +76,106 @@ exports.getTransactions = functions.https.onCall(async (data, context) => {
   const from = data["from"];
   const to = data["to"];
   const type = data["type"];
+  const groupByDate = data["groupByDate"];
+  const categories = data.categories;
+  const accountId = data.accountId;
 
-  var snap = await admin
+  var query = admin
     .firestore()
     .collection("transactions")
-    .where("userId", "==", userId)
-    .get();
-
+    .where("userId", "==", userId);
   if (type != null) {
-    console.log("typeeeeeee" + type);
-    snap.query.where("type", "==", type);
+    query = query.where("type", "==", type);
   }
   if (from != null && to != null) {
     const fromTimeStamp = new Date(from);
     const toTimeStamp = new Date(to);
-    snap.query
+    query = query
       .where("created_at", ">=", fromTimeStamp)
       .where("created_at", "<=", toTimeStamp);
   }
+  if (accountId) {
+    query = query.where("accountId", "==", accountId);
+  }
+  if (categories) {
+    query = query.where("categoryId", "in", categories);
+  }
   if (sortBy == "newest" || sortBy == "oldest") {
-    snap.query.orderBy("created_at", sortBy == "newest" ? "desc" : "asc");
+    query = query.orderBy("created_at", sortBy == "newest" ? "desc" : "asc");
   }
   if (sortBy == "highest" || sortBy == "lowest") {
-    snap.query.orderBy("amount", sortBy == "highest" ? "desc" : "asc");
+    query = query.orderBy("amount", sortBy == "highest" ? "desc" : "asc");
   }
   if (limit != null) {
-    snap.query.limit(limit);
+    query = query.limit(limit);
   }
-  const snapShots = await snap.query.get();
+
+  const snapShots = await query.get();
   const transactions = await populateTransactions(snapShots.docs);
-  return JSON.stringify(transactions);
+  if (groupByDate) {
+    const transactionsOfDate = groupTransactionsByDate(transactions);
+    return JSON.stringify(transactionsOfDate);
+  } else {
+    return JSON.stringify(transactions);
+  }
 });
 
-async function populateTransactions(transactions) {
-  var populatedtransactions = [];
-  for (var doc of transactions) {
-    var transaction = doc.data();
-    transaction.id = doc.id;
-    const accountSnap = await admin
-      .firestore()
-      .collection("accounts")
-      .doc(transaction.accountId)
-      .get();
-    const categorySnap = await admin
+exports.addBudget = functions.https.onCall(async (data, context) => {
+  userId = context.auth.uid;
+  const categoryId = data.categoryId;
+  data.userId = userId;
+  const budgetsDoc = await admin
+    .firestore()
+    .collection("budgets")
+    .where("userId", "==", userId)
+    .where("categoryId", "==", categoryId)
+
+    .get();
+
+  const categoryDoc = await admin
+    .firestore()
+    .collection("utils")
+    .doc("expense")
+    .collection("categories")
+    .doc(data.categoryId)
+    .get();
+  data.category = categoryDoc.data();
+  data.category.id = categoryDoc.id;
+
+  if (!budgetsDoc.empty) {
+    throw new functions.https.HttpsError(
+      "out-of-range",
+      "Budget of this Category already exist"
+    );
+  }
+
+  const budgetDoc = await admin.firestore().collection("budgets").add(data);
+  data.id = budgetDoc.id;
+  return JSON.stringify(data);
+});
+
+exports.getBudgets = functions.https.onCall(async (data, context) => {
+  userId = context.auth.uid;
+  const budgetsDoc = await admin
+    .firestore()
+    .collection("budgets")
+    .where("userId", "==", userId)
+    .get();
+  var budgets = [];
+  for (var doc of budgetsDoc.docs) {
+    var budget = doc.data();
+    budget.id = doc.id;
+    const categoryDoc = await admin
       .firestore()
       .collection("utils")
       .doc("expense")
       .collection("categories")
-      .doc(transaction.categoryId)
+      .doc(budget.categoryId)
       .get();
+    budget.category = categoryDoc.data();
+    budget.category.id = categoryDoc.id;
 
-    transaction.category = categorySnap.data();
-    transaction.category.id = categorySnap.id;
-    transaction.account = accountSnap.data();
-    transaction.account.id = accountSnap.id;
-
-    populatedtransactions.push(transaction);
+    budgets.push(budget);
   }
-  return populatedtransactions;
-}
-
-async function getAccount(accountId) {
-  var expense = 0.0;
-  var income = 0.0;
-  const accountSnap = await admin
-    .firestore()
-    .collection("accounts")
-    .doc(accountId)
-    .get();
-  var account = accountSnap.data();
-  account.id = accountSnap.id;
-  var totalTransactions = await calculateTotalAccountTransactions(accountId);
-  expense += totalTransactions.expense;
-  income += totalTransactions.income;
-  var totalTransfers = await calculateTotalAccountTransfers(accountId);
-  expense += totalTransfers.expense;
-  income += totalTransfers.income;
-
-  account.balance += income - expense;
-
-  return account;
-}
-async function getUserAccounts(userId) {
-  const accountsSnap = await admin
-    .firestore()
-    .collection("accounts")
-    .where("userId", "==", userId)
-    .get();
-  var accounts = [];
-
-  for (var doc of accountsSnap.docs) {
-    var expense = 0.0;
-    var income = 0.0;
-    var account = doc.data();
-    account.id = doc.id;
-
-    var totalTransactions = await calculateTotalAccountTransactions(account.id);
-    expense += totalTransactions.expense;
-    income += totalTransactions.income;
-    var totalTransfers = await calculateTotalAccountTransfers(account.id);
-    expense += totalTransfers.expense;
-    income += totalTransfers.income;
-
-    account.balance += income - expense;
-    account.expense = expense;
-    account.income = income;
-    accounts.push(account);
-  }
-
-  return accounts;
-}
-
-async function calculateTotalAccountTransactions(accountId) {
-  var expense = 0.0;
-  var income = 0.0;
-  const transactions = await admin
-    .firestore()
-    .collection("transactions")
-    .where("accountId", "==", accountId)
-    .get();
-
-  for (var doc of transactions.docs) {
-    if (doc.data().type == "expense") {
-      expense += doc.data().amount;
-    } else if (doc.data().type == "income") {
-      income += doc.data().amount;
-    }
-  }
-  return {
-    expense,
-    income,
-  };
-}
-async function calculateTotalAccountTransfers(accountId) {
-  var expense = 0.0;
-  var income = 0.0;
-  const outcomeTransfers = await admin
-    .firestore()
-    .collection("transfer")
-    .where("fromAccountId", "==", accountId)
-    .get();
-  const incomeTransfers = await admin
-    .firestore()
-    .collection("transfer")
-    .where("toAccountId", "==", accountId)
-    .get();
-
-  for (var doc of outcomeTransfers.docs) {
-    expense += doc.data().amount;
-  }
-  for (var doc of incomeTransfers.docs) {
-    income += doc.data().amount;
-  }
-
-  return {
-    expense,
-    income,
-  };
-}
+  return JSON.stringify(budgets);
+});

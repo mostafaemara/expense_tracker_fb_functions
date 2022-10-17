@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "firebase-functions": "^4.0.0-rc.0",
+    "lodash": "^4.17.21"
+  }
+}
