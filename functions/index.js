@@ -3,10 +3,14 @@ const admin = require("firebase-admin");
 
 const {
   groupTransactionsByDate,
+  calculateExpensesOfCategory,
 
   getAccount,
   getUserAccounts,
   populateTransactions,
+  calculateTotalAccountTransactions,
+  calculateBudgets,
+  totalTransactionsInDate,
 } = require("./helpers");
 admin.initializeApp();
 
@@ -124,6 +128,7 @@ exports.addBudget = functions.https.onCall(async (data, context) => {
   userId = context.auth.uid;
   const categoryId = data.categoryId;
   data.userId = userId;
+
   const budgetsDoc = await admin
     .firestore()
     .collection("budgets")
@@ -155,7 +160,8 @@ exports.addBudget = functions.https.onCall(async (data, context) => {
 });
 
 exports.getBudgets = functions.https.onCall(async (data, context) => {
-  userId = context.auth.uid;
+  const userId = context.auth.uid;
+  const month = data.month;
   const budgetsDoc = await admin
     .firestore()
     .collection("budgets")
@@ -172,10 +178,41 @@ exports.getBudgets = functions.https.onCall(async (data, context) => {
       .collection("categories")
       .doc(budget.categoryId)
       .get();
+    budget.amountSpent = await calculateExpensesOfCategory(
+      userId,
+      budget.categoryId,
+      month
+    );
+
     budget.category = categoryDoc.data();
     budget.category.id = categoryDoc.id;
 
     budgets.push(budget);
   }
   return JSON.stringify(budgets);
+});
+
+exports.getFinancialReport = functions.https.onCall(async (data, context) => {
+  const userId = context.auth.uid;
+  var date = new Date(data.date);
+
+  date.setHours(0, 0, 0, 0);
+
+  const expenses = await totalTransactionsInDate(userId, date, "expense");
+  const incomes = await totalTransactionsInDate(userId, date, "income");
+  const budgetReport = await calculateBudgets(
+    expenses.transactions,
+    userId,
+    date.getMonth()
+  );
+
+  return JSON.stringify({
+    expenses: expenses.transactions,
+    highestExpense: expenses.highestTransaction,
+    expensesAmount: expenses.amount,
+    incomes: incomes.transactions,
+    highestIncome: incomes.highestTransaction,
+    incomesAmount: incomes.amount,
+    ...budgetReport,
+  });
 });

@@ -143,8 +143,129 @@ async function calculateTotalAccountTransfers(accountId) {
     income,
   };
 }
+async function calculateExpensesOfCategory(userId, categoryId, month) {
+  var expense = 0.0;
+  const today = new Date();
 
+  console.log("month" + month);
+  month = Number.parseInt(month);
+  console.log("month" + month);
+  var from = new Date(today.getFullYear(), month, 1);
+  var to = new Date(today.getFullYear(), month + 1, 1);
+
+  console.log("today" + today);
+  console.log("from" + from);
+  console.log("to" + to);
+  const transactionsSnap = await admin
+    .firestore()
+    .collection("transactions")
+    .where("userId", "==", userId)
+    .where("categoryId", "==", categoryId)
+    .where("created_at", ">=", from)
+    .where("created_at", "<=", to)
+    .where("type", "==", "expense")
+    .select("amount")
+    .get();
+  for (var doc of transactionsSnap.docs) {
+    expense += doc.data().amount;
+  }
+
+  return expense;
+}
+
+async function totalTransactionsInDate(userId, date, type) {
+  var transactionAmount = 0;
+
+  const transactionsSnap = await admin
+    .firestore()
+    .collection("transactions")
+    .where("userId", "==", userId)
+
+    .where("created_at", ">=", new Date(date.getFullYear(), date.getMonth(), 1))
+    .where(
+      "created_at",
+      "<=",
+      new Date(date.getFullYear(), date.getMonth() + 1, 1)
+    )
+    .where("type", "==", type)
+
+    .get();
+
+  const transactions = await populateTransactions(transactionsSnap.docs);
+
+  for (const t of transactions) {
+    transactionAmount += t.amount;
+  }
+
+  const indexOfMaxValue = transactions.reduce(
+    (iMax, x, i, arr) => (x.amount > arr[iMax].amount ? i : iMax),
+    0
+  );
+  const highestTransaction = transactions[indexOfMaxValue];
+
+  return {
+    amount: transactionAmount,
+    transactions,
+    highestTransaction: highestTransaction,
+  };
+}
+
+async function calculateBudgets(expenses, userId, month) {
+  var exceededBudgets = [];
+  var budgets = [];
+  const budgetsDoc = await admin
+    .firestore()
+    .collection("budgets")
+    .where("userId", "==", userId)
+    .get();
+  var budgets = [];
+  for (var doc of budgetsDoc.docs) {
+    var budget = doc.data();
+    budget.id = doc.id;
+    const categoryDoc = await admin
+      .firestore()
+      .collection("utils")
+      .doc("expense")
+      .collection("categories")
+      .doc(budget.categoryId)
+      .get();
+    budget.amountSpent = 0;
+
+    budget.category = categoryDoc.data();
+    budget.category.id = categoryDoc.id;
+
+    budgets.push(budget);
+  }
+  for (const b of budgets) {
+    const budgetExpenses = expenses.filter((e) => {
+      return e.categoryId == b.categoryId;
+    });
+
+    const amount = calculateTotalAmountOfTransactions(budgetExpenses);
+
+    if (amount >= b.amount) {
+      exceededBudgets.push(b);
+    }
+  }
+
+  return {
+    budgets,
+    exceededBudgets,
+  };
+}
+
+function calculateTotalAmountOfTransactions(expenses) {
+  var amount = 0;
+
+  for (const t of expenses) {
+    amount += t.amount;
+  }
+  return amount;
+}
 module.exports = {
+  calculateBudgets,
+  totalTransactionsInDate,
+  calculateExpensesOfCategory,
   calculateTotalAccountTransactions,
   getAccount,
   getUserAccounts,
