@@ -216,3 +216,27 @@ exports.getFinancialReport = functions.https.onCall(async (data, context) => {
     ...budgetReport,
   });
 });
+
+exports.addTransfer = functions.https.onCall(async (data, context) => {
+  const userId = context.auth.uid;
+  const fromAccountId = data.fromAccountId;
+  const toAccountId = data.toAccountId;
+  const amount = data.amount;
+
+  const fromAccount = await getAccount(fromAccountId);
+
+  if (fromAccount.balance < amount) {
+    throw new functions.https.HttpsError(
+      "out-of-range",
+      "Not enough Balance avalible balance: " + fromAccount.balance
+    );
+  }
+
+  const transfer = await admin
+    .firestore()
+    .collection("transfer")
+    .add({ ...data });
+  return JSON.stringify({
+    messege: "tranferAdded Succesfuly",
+  });
+});
