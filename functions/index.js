@@ -9,6 +9,7 @@ const {
   getUserAccounts,
   populateTransactions,
   calculateTotalAccountTransactions,
+  DateDiff,
   calculateBudgets,
   totalTransactionsInDate,
 } = require("./helpers");
@@ -39,6 +40,11 @@ exports.addTransaction = functions.https.onCall(async (data, context) => {
   data.created_at = data.created_at.toDate();
   const category = categoryDoc.data();
   category.id = categoryDoc.id;
+
+  if (data.frequency) {
+    data.updated_at = admin.firestore.Timestamp.now();
+    await admin.firestore().collection("transactionFrequencies").add(data);
+  }
   return JSON.stringify({
     account,
     category,
@@ -240,3 +246,124 @@ exports.addTransfer = functions.https.onCall(async (data, context) => {
     messege: "tranferAdded Succesfuly",
   });
 });
+
+exports.deleteTransaction = functions.https.onCall(async (data, context) => {
+  const id = data.id;
+
+  const transactionDoc = await admin
+    .firestore()
+    .collection("transactions")
+    .doc(id)
+    .get();
+
+  if (transactionDoc.data().type == "income") {
+    const account = await getAccount(transactionDoc.data().accountId);
+
+    if (transactionDoc.data().amount > account.balance) {
+      throw new functions.https.HttpsError(
+        "out-of-range",
+        "Cannot Delete Transaction incorrect balance"
+      );
+    }
+    await admin.firestore().collection("transactions").doc(id).delete();
+  } else {
+    await admin.firestore().collection("transactions").doc(id).delete();
+  }
+
+  return JSON.stringify({
+    messege: "Deleted Succesfuly",
+  });
+});
+
+exports.frequencyTransactions = functions.pubsub
+  .schedule("every 12 hours")
+  .onRun(async (context) => {
+    var frequenciesSnapShot = await admin
+      .firestore()
+      .collection("transactionFrequencies")
+      .get();
+
+    for (const doc of frequenciesSnapShot.docs) {
+      const frequency = doc.data();
+
+      const now = admin.firestore.Timestamp.now().toDate();
+      const lastAddedDate = frequency.updated_at.toDate();
+      switch (frequency.frequency) {
+        case "daily":
+          if (DateDiff.inDays(lastAddedDate, now) >= 1) {
+            await addTransactionWithNotify(frequency, doc.id);
+          }
+          break;
+        case "weekly":
+          if (DateDiff.inWeeks(lastAddedDate, now) >= 1) {
+            await addTransactionWithNotify(frequency, doc.id);
+          }
+          break;
+        case "monthly":
+          if (DateDiff.inMonths(lastAddedDate, now) >= 1) {
+            await addTransactionWithNotify(frequency, doc.id);
+          }
+          break;
+        case "yearly":
+          if (DateDiff.inYears(lastAddedDate, now) >= 1) {
+            await addTransactionWithNotify(frequency, doc.id);
+          }
+          break;
+        default:
+          break;
+      }
+    }
+  });
+
+async function addTransactionWithNotify(frequency, id) {
+  const accountId = frequency.accountId;
+  frequency.created_at = admin.firestore.Timestamp.now();
+
+  const account = await getAccount(accountId);
+  var userDoc = await admin
+    .firestore()
+    .collection("users")
+    .doc(frequency.userId)
+    .get();
+  const token = userDoc.data().token;
+  if (frequency.type == "expense" && account.balance < frequency.amount) {
+    await sendNotification(
+      "Coudnt add Transaction",
+      "Not enough Balance avalible balance: " + account.balance,
+      token,
+      null
+    );
+    throw new functions.https.HttpsError(
+      "out-of-range",
+      "Not enough Balance avalible balance: " + account.balance
+    );
+  }
+  const transaction = await admin
+    .firestore()
+    .collection("transactions")
+    .add(frequency);
+  await admin.firestore().collection("transactionFrequencies").doc(id).update({
+    updated_at: admin.firestore.Timestamp.now(),
+  });
+  await sendNotification(
+    "Transaction " + frequency.title + " Added",
+    "Transaction " + frequency.title + " Added Amount: " + frequency.amount,
+    token,
+    ""
+  );
+}
+
+async function sendNotification(title, body, token, data) {
+  const payload = {
+    token: token,
+    notification: {
+      title: title,
+      body: body,
+    },
+    data: {
+      body: body,
+    },
+  };
+
+  await admin.messaging().send(payload);
+}
