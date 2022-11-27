@@ -276,7 +276,7 @@ exports.deleteTransaction = functions.https.onCall(async (data, context) => {
 });
 
 exports.frequencyTransactions = functions.pubsub
-  .schedule("every 12 hours")
+  .schedule("every 1 minutes")
   .onRun(async (context) => {
     var frequenciesSnapShot = await admin
       .firestore()
@@ -328,10 +328,13 @@ async function addTransactionWithNotify(frequency, id) {
   const token = userDoc.data().token;
   if (frequency.type == "expense" && account.balance < frequency.amount) {
     await sendNotification(
-      "Coudnt add Transaction",
-      "Not enough Balance avalible balance: " + account.balance,
+      `Transaction Failed! :${frequency.title}`,
+      `Failed to deduct ${frequency.amount}$ Account:${account.title} balance is not enough Available Balance:${account.balance}$`,
       token,
-      null
+      null,
+      frequency.userId,
+      admin.firestore.Timestamp.now(),
+      "announcement"
     );
     throw new functions.https.HttpsError(
       "out-of-range",
@@ -345,15 +348,42 @@ async function addTransactionWithNotify(frequency, id) {
   await admin.firestore().collection("transactionFrequencies").doc(id).update({
     updated_at: admin.firestore.Timestamp.now(),
   });
+
+  const categoryDoc = await admin
+    .firestore()
+    .collection("utils")
+    .doc("expense")
+    .collection("categories")
+    .doc(frequency.categoryId)
+    .get();
+
+  const category = categoryDoc.data();
+  category.id = categoryDoc.id;
+  frequency.account = account;
+  frequency.category = category;
+
   await sendNotification(
-    "Transaction " + frequency.title + " Added",
-    "Transaction " + frequency.title + " Added Amount: " + frequency.amount,
+    frequency.type == "expense"
+      ? `Expense:${frequency.title} has been paid`
+      : `Income:${frequency.title} received`,
+    `Your current account:${account.title} balance is:${account.balance}$`,
     token,
-    ""
+    transaction.id,
+    frequency.userId,
+    admin.firestore.Timestamp.now(),
+    "transaction_event"
   );
 }
 
-async function sendNotification(title, body, token, data) {
+async function sendNotification(
+  title,
+  body,
+  token,
+  transactionId,
+  userId,
+  created_at,
+  type
+) {
   const payload = {
     token: token,
     notification: {
@@ -361,9 +391,19 @@ async function sendNotification(title, body, token, data) {
       body: body,
     },
     data: {
-      body: body,
+      transactionId,
+      type,
     },
   };
 
   await admin.messaging().send(payload);
+  await admin.firestore().collection("notifications").add({
+    title,
+    body,
+    userId,
+    transactionId,
+    type,
+    created_at,
+    mark_as_read: false,
+  });
 }
