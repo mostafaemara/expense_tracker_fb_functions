@@ -276,7 +276,7 @@ exports.deleteTransaction = functions.https.onCall(async (data, context) => {
 });
 
 exports.frequencyTransactions = functions.pubsub
-  .schedule("every 1 minutes")
+  .schedule("every 6 hours")
   .onRun(async (context) => {
     var frequenciesSnapShot = await admin
       .firestore()
